@@ -48,7 +48,6 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net/ -a YOUR_SIGNING_ACCOUNT -c YOUR_CERT_PROFILE -d YOUR_APP_NAME %1",
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       },

@@ -153,38 +153,6 @@ jobs:
           shared-key: release
           save-if: false
 
-      # Building this from source cost four minutes a release. Upstream renamed
-      # the crate to artifact-signing-cli, but the signCommand in
-      # tauri.conf.json still invokes it under the old name.
-      - name: Install trusted-signing-cli
-        shell: pwsh
-        env:
-          SIGNING_CLI_VERSION: "0.11.0"
-          SIGNING_CLI_SHA256: "ddc6f6ef68631bf367ad051d7d37109e58d46095406e1fbba60d553b10f94393"
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP "signing-cli"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $exe = Join-Path $dir "trusted-signing-cli.exe"
-          $url = "https://github.com/Levminer/trusted-signing-cli/releases/download/$env:SIGNING_CLI_VERSION/artifact-signing-cli.exe"
-          Invoke-WebRequest -Uri $url -OutFile $exe
-          # This binary runs with the Azure signing credentials in its environment.
-          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash
-          if ($hash -ne $env:SIGNING_CLI_SHA256) {
-            throw "Checksum mismatch for $url (got $hash)"
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $dir
-
-      - name: Locate signtool.exe
-        id: signtool
-        shell: pwsh
-        run: |
-          $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
-            Where-Object { $_.FullName -like "*\x64\*" } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $signtool) { throw "signtool.exe not found" }
-          echo "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
-
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
@@ -227,9 +195,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           # Read by `option_env!` at compile time. A build without it reports no
           # diagnostics, so a fork releases without collecting anything.
           LTK_POSTHOG_API_KEY: ${{ secrets.LTK_POSTHOG_API_KEY }}
@@ -243,7 +208,6 @@ jobs:
           POSTHOG_CLI_HOST: https://eu.posthog.com
           POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_CLI_PROJECT_ID }}
           POSTHOG_CLI_API_KEY: ${{ secrets.POSTHOG_CLI_API_KEY }}
-          SIGNTOOL_PATH: ${{ steps.signtool.outputs.SIGNTOOL_PATH }}
         with:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: "LTK Manager v${{ steps.version.outputs.version }}"
