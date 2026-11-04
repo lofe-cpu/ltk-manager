@@ -1,15 +1,19 @@
 //! Builds the patcher delivery client of this manager build and runs its syncs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs_err as fs;
 use ltk_manager_base::config::Config;
+use ltk_manager_base::hashing::sha256_file;
 use ltk_manager_runtime::patcher::delivery::{
     attested_build, Channel, DeliveryError, PatcherDelivery, StagedPatcher,
 };
 use parking_lot::Mutex;
 use semver::{Prerelease, Version};
+
+use crate::patcher::host::{HOOK_DLL_NAME, HOST_EXE_NAME};
 
 /// Base URL and base64 minisign manifest key of the staging delivery service.
 const STAGING: (&str, &str) = (
@@ -38,6 +42,16 @@ const DELIVERY: Option<&str> = option_env!("LTK_PATCHER_DELIVERY");
 /// The release workflow reads the same file into the build attestation, so the file must
 /// change together with the binary.
 const BUNDLED_HOST_PROTOCOL: &str = include_str!("../../host-protocol");
+
+/// Environment variable that names a patcher DLL to run instead of a delivered one.
+///
+/// Read at runtime. A build that has no attestation cannot download a DLL, so a fork reads
+/// this to run a DLL it provides, without the delivery service.
+const DLL_OVERRIDE: &str = "LTK_PATCHER_DLL";
+
+/// Staging directory name for the DLL that [`DLL_OVERRIDE`] names. Not a digest, so
+/// `remove_unused` keeps it.
+const OVERRIDE_DIR: &str = "local-override";
 
 /// Tauri-managed delivery client, and the lock that allows one sync at a time.
 #[derive(Clone)]
@@ -143,6 +157,10 @@ impl PatcherDeliveryState {
             return Err(DeliveryError::NoRelease);
         };
 
+        if let Some(staged) = local_override(&delivery.root, bundled_host)? {
+            return Ok(staged);
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
@@ -156,6 +174,44 @@ impl PatcherDeliveryState {
         let _guard = self.syncing.lock();
         delivery.refresh(channel, bundled_host, now)
     }
+}
+
+/// Stages the DLL that [`DLL_OVERRIDE`] names under `root`, beside a copy of `bundled_host`.
+///
+/// Returns `None` if the variable is unset or empty. Fails if the variable names a path that
+/// is not a readable file, or if a copy fails. The staged build never expires.
+fn local_override(root: &Path, bundled_host: &Path) -> Result<Option<StagedPatcher>, DeliveryError> {
+    let Some(source) = std::env::var_os(DLL_OVERRIDE).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let source = PathBuf::from(source);
+
+    let dir = root.join(OVERRIDE_DIR);
+    fs::create_dir_all(&dir)?;
+
+    let dll = dir.join(HOOK_DLL_NAME);
+    if !dll.exists() || sha256_file(&dll)? != sha256_file(&source)? {
+        fs::copy(&source, &dll)?;
+    }
+
+    let host = dir.join(HOST_EXE_NAME);
+    if !host.exists() || sha256_file(&host)? != sha256_file(bundled_host)? {
+        fs::copy(bundled_host, &host)?;
+    }
+
+    let digest = sha256_file(&dll)?;
+    tracing::warn!(
+        source = %source.display(),
+        %digest,
+        "Running a local patcher DLL from LTK_PATCHER_DLL, bypassing the delivery service"
+    );
+
+    Ok(Some(StagedPatcher {
+        dir,
+        version: "local".to_string(),
+        digest,
+        eol: u32::MAX,
+    }))
 }
 
 /// Returns the delivery channel that `config` selects.
